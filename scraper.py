@@ -77,9 +77,8 @@ def get_highlights() -> list[dict]:
 
         # Step 2: Navigate to Kindle notebook
         print("Navigating to Kindle notebook...")
-        page.wait_for_load_state("networkidle", timeout=20000)
         page.goto("https://read.amazon.com/notebook")
-        page.wait_for_load_state("networkidle", timeout=30000)
+        page.wait_for_load_state("domcontentloaded", timeout=30000)
 
         # Wait for book list sidebar
         try:
