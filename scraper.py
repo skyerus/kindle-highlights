@@ -34,12 +34,12 @@ def get_highlights() -> list[dict]:
 
         # Amazon sometimes shows a bot-check interstitial ("Continue shopping") — click through it
         try:
-            btn = page.wait_for_selector("input[type='submit'][value='Continue shopping']", timeout=5000)
-            if btn:
-                print("Bot check detected, clicking through...")
-                btn.click()
-                page.wait_for_load_state("networkidle", timeout=15000)
-        except PlaywrightTimeoutError:
+            page.get_by_text("Continue shopping", exact=True).first.click(timeout=5000)
+            print("Bot check detected, clicking through...")
+            page.wait_for_load_state("networkidle", timeout=15000)
+            page.screenshot(path="debug_after_interstitial.png")
+            print(f"After interstitial click, URL: {page.url}")
+        except Exception:
             pass  # No interstitial, proceed normally
 
         # Enter email
