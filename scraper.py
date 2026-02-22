@@ -28,10 +28,18 @@ def get_highlights() -> list[dict]:
 
         # Step 1: Sign in
         print("Navigating to Amazon sign-in...")
-        page.goto("https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0")
+        page.goto("https://www.amazon.co.uk/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.co.uk%2F&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=gbflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0")
+        print(f"Landed on: {page.url}")
+        page.screenshot(path="debug_signin.png")
 
         # Enter email
-        page.wait_for_selector("#ap_email", timeout=15000)
+        try:
+            page.wait_for_selector("#ap_email", timeout=15000)
+        except PlaywrightTimeoutError:
+            print(f"Timed out waiting for email field. Current URL: {page.url}")
+            page.screenshot(path="debug_signin.png")
+            browser.close()
+            raise
         page.fill("#ap_email", email)
         page.click("#continue")
 
