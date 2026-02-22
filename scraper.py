@@ -26,19 +26,19 @@ def get_highlights() -> list[dict]:
         )
         page = context.new_page()
 
-        # Step 1: Sign in
-        print("Navigating to Amazon sign-in...")
-        page.goto("https://www.amazon.co.uk/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.co.uk%2F&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=gbflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0")
-        print(f"Landed on: {page.url}")
-        page.screenshot(path="debug_signin.png")
+        # Step 1: Navigate to notebook — it will redirect to the correct amazon.com sign-in
+        # with return_to=read.amazon.com/notebook already set
+        print("Navigating to Kindle notebook (will redirect to sign-in)...")
+        page.goto("https://read.amazon.com/notebook")
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
+        print(f"Redirected to: {page.url}")
 
         # Amazon sometimes shows a bot-check interstitial ("Continue shopping") — click through it
         try:
             page.get_by_text("Continue shopping", exact=True).first.click(timeout=5000)
             print("Bot check detected, clicking through...")
-            page.wait_for_load_state("networkidle", timeout=15000)
-            page.screenshot(path="debug_after_interstitial.png")
-            print(f"After interstitial click, URL: {page.url}")
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+            print(f"After interstitial, URL: {page.url}")
         except Exception:
             pass  # No interstitial, proceed normally
 
@@ -63,31 +63,27 @@ def get_highlights() -> list[dict]:
             try:
                 page.wait_for_selector("#auth-mfa-otpcode", timeout=8000)
                 totp_code = pyotp.TOTP(otp_secret).now()
-                print(f"Entering OTP code...")
+                print("Entering OTP code...")
                 page.fill("#auth-mfa-otpcode", totp_code)
-                # Uncheck "don't require OTP on this browser" to keep things clean
                 try:
                     page.uncheck("#auth-mfa-remember-device")
                 except Exception:
                     pass
                 page.click("#auth-signin-button")
             except PlaywrightTimeoutError:
-                # No OTP prompt — either not required or already handled
                 print("No OTP prompt detected, continuing...")
 
-        # Step 2: Navigate to Kindle notebook
-        print("Navigating to Kindle notebook...")
-        page.goto("https://read.amazon.com/notebook")
-        page.wait_for_load_state("domcontentloaded", timeout=30000)
-
-        # Wait for book list sidebar
+        # Step 2: Should now land on the notebook — wait for the book list sidebar
+        print("Waiting for Kindle notebook to load...")
         try:
             page.wait_for_selector("#kp-notebook-library", timeout=30000)
         except PlaywrightTimeoutError:
-            print("Could not load notebook library. Checking page state...")
-            print(f"Current URL: {page.url}")
+            print(f"Could not load notebook library. Current URL: {page.url}")
+            page.screenshot(path="debug_notebook.png")
             browser.close()
             return []
+
+        print(f"Notebook loaded. URL: {page.url}")
 
         # Collect all book elements
         book_elements = page.query_selector_all("#kp-notebook-library .kp-notebook-library-each-book")
@@ -117,7 +113,6 @@ def get_highlights() -> list[dict]:
             # Wait for highlights to load
             try:
                 page.wait_for_selector("#kp-notebook-annotations", timeout=15000)
-                # Small wait to ensure all highlights render
                 time.sleep(1)
             except PlaywrightTimeoutError:
                 print(f"  No highlights panel for: {book_title}")
