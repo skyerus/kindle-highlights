@@ -107,6 +107,8 @@ def get_highlights() -> list[dict]:
                 book_title = "Unknown Title"
                 author = "Unknown Author"
 
+            author = author.removeprefix("By: ")
+
             try:
                 img_el = book.query_selector("img")
                 cover_url = img_el.get_attribute("src") if img_el else None
