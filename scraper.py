@@ -97,7 +97,7 @@ def get_highlights() -> list[dict]:
 
             book = books[i]
 
-            # Extract title and author before clicking
+            # Extract title, author, and cover URL before clicking
             try:
                 title_el = book.query_selector("h2.kp-notebook-searchable")
                 author_el = book.query_selector("p.kp-notebook-searchable")
@@ -106,6 +106,12 @@ def get_highlights() -> list[dict]:
             except Exception:
                 book_title = "Unknown Title"
                 author = "Unknown Author"
+
+            try:
+                img_el = book.query_selector("img")
+                cover_url = img_el.get_attribute("src") if img_el else None
+            except Exception:
+                cover_url = None
 
             print(f"Scraping: {book_title}")
             book.click()
@@ -128,6 +134,7 @@ def get_highlights() -> list[dict]:
                             "highlight": text,
                             "book_title": book_title,
                             "author": author,
+                            "cover_url": cover_url,
                         })
                 except Exception:
                     continue

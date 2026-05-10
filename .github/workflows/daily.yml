@@ -1,12 +1,15 @@
-name: Daily Kindle Highlight to Discord
+name: Daily Kindle Quote
 
 on:
   schedule:
     - cron: '30 7 * * *'  # 7:30am UTC (7:30am GMT / 8:30am BST)
-  workflow_dispatch:       # Allow manual trigger for testing
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  send-highlight:
+  send-quote:
     runs-on: ubuntu-22.04
 
     steps:
@@ -21,21 +24,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Install Playwright browsers
-        run: playwright install chromium --with-deps
-
-      - name: Run highlight sender
+      - name: Pick quote, render PNG, send to Discord
         env:
-          AMAZON_EMAIL: ${{ secrets.AMAZON_EMAIL }}
-          AMAZON_PASSWORD: ${{ secrets.AMAZON_PASSWORD }}
-          AMAZON_OTP_SECRET: ${{ secrets.AMAZON_OTP_SECRET }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python main.py
 
-      - name: Upload debug screenshots
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots
-          path: "*.png"
-          retention-days: 3
+      - name: Commit quote.png
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add quote.png
+          if git diff --cached --quiet; then
+            echo "No PNG change to commit."
+          else
+            git commit -m "chore: daily quote PNG"
+            git push
+          fi
