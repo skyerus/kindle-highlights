@@ -6,14 +6,16 @@ from pathlib import Path
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
-# Kindle Paperwhite 2 portrait resolution
-WIDTH, HEIGHT = 758, 1024
+# Kindle Paperwhite 2 landscape resolution
+WIDTH, HEIGHT = 1024, 758
 MARGIN = 40
-QUOTE_AREA_HEIGHT = int(HEIGHT * 0.82)
-FONT_SIZES = [36, 32, 28, 24, 20, 18, 16]
-FOOTER_SIZE = 18
 COVER_WIDTH = 70
 COVER_TEXT_GAP = 16
+# Reserve enough vertical space at the bottom for the cover (~105px tall for a 70-wide 2:3 cover) plus a margin.
+FOOTER_AREA_HEIGHT = 150
+QUOTE_AREA_HEIGHT = HEIGHT - FOOTER_AREA_HEIGHT
+FONT_SIZES = [36, 32, 28, 24, 20, 18, 16]
+FOOTER_SIZE = 18
 DEFAULT_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
 
 
