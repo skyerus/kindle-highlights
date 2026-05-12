@@ -6,12 +6,14 @@ from pathlib import Path
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
-# Kindle Paperwhite 2 landscape resolution
+# PW2 native resolution is 758x1024 portrait and the lock screen does not rotate.
+# Render the layout on a 1024x758 landscape canvas, then rotate 90° at save time so
+# the file matches linkss's expected portrait dimensions while the visible content
+# is oriented for the Kindle held sideways.
 WIDTH, HEIGHT = 1024, 758
 MARGIN = 40
 COVER_WIDTH = 70
 COVER_TEXT_GAP = 16
-# Reserve enough vertical space at the bottom for the cover (~105px tall for a 70-wide 2:3 cover) plus a margin.
 FOOTER_AREA_HEIGHT = 150
 QUOTE_AREA_HEIGHT = HEIGHT - FOOTER_AREA_HEIGHT
 FONT_SIZES = [36, 32, 28, 24, 20, 18, 16]
@@ -119,5 +121,6 @@ def render_quote_to_png(quote: dict, output_path: Path) -> None:
         draw.text((x, fy), line, font=footer_font, fill=0)
         fy += footer_line_h
 
+    img = img.transpose(Image.ROTATE_90)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(output_path, format="PNG", optimize=True)
