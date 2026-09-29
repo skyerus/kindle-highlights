@@ -1,0 +1,33 @@
+name: Shared highlights tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test runtimes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1
+          python -m pip install playwright==1.44.0 pyotp==2.9.0
+          playwright install chromium --with-deps
+      - name: Collector durability and authentication
+        run: python -m unittest discover -s tests -v
+      - name: Workflow concurrency and Amazon sign-in fixtures
+        run: python -m unittest test_scraper_refresh test_scraper_signin -v
+      - name: KOReader queue and process lifecycle
+        run: |
+          lua5.1 koreader/sharedhighlights.koplugin/tests/queue_test.lua
+          lua5.1 koreader/sharedhighlights.koplugin/tests/process_test.lua
+          lua5.1 koreader/sharedhighlights.koplugin/tests/lifecycle_test.lua

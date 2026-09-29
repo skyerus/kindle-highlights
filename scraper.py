@@ -1,7 +1,19 @@
 import os
 import time
-import pyotp
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+
+# Amazon uses both the original sign-in form and a newer claim/email form.
+EMAIL_SELECTOR = ', '.join((
+    '#ap_email:visible', '#ap_email_login:visible',
+    'input[name="email"]:visible', 'input[autocomplete="username"]:visible',
+))
+
+
+def enter_email(page, email: str) -> None:
+    field = page.locator(EMAIL_SELECTOR).first
+    field.wait_for(state="visible", timeout=15000)
+    field.fill(email)
+    page.get_by_role("button", name="Continue", exact=True).click()
 
 
 def get_highlights() -> list[dict]:
@@ -9,6 +21,9 @@ def get_highlights() -> list[dict]:
     Log in to Amazon and scrape all Kindle highlights from read.amazon.com/notebook.
     Returns a list of dicts: [{highlight, book_title, author}, ...]
     """
+    import pyotp
+    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
     email = os.environ["AMAZON_EMAIL"]
     password = os.environ["AMAZON_PASSWORD"]
     otp_secret = os.environ.get("AMAZON_OTP_SECRET", "")
@@ -31,27 +46,25 @@ def get_highlights() -> list[dict]:
         print("Navigating to Kindle notebook (will redirect to sign-in)...")
         page.goto("https://read.amazon.com/notebook")
         page.wait_for_load_state("domcontentloaded", timeout=15000)
-        print(f"Redirected to: {page.url}")
+        print("Arrived at Amazon sign-in.")
 
         # Amazon sometimes shows a bot-check interstitial ("Continue shopping") — click through it
         try:
             page.get_by_text("Continue shopping", exact=True).first.click(timeout=5000)
             print("Bot check detected, clicking through...")
             page.wait_for_load_state("domcontentloaded", timeout=15000)
-            print(f"After interstitial, URL: {page.url}")
+            print("Continued past the interstitial.")
         except Exception:
             pass  # No interstitial, proceed normally
 
         # Enter email
         try:
-            page.wait_for_selector("#ap_email", timeout=15000)
+            enter_email(page, email)
         except PlaywrightTimeoutError:
-            print(f"Timed out waiting for email field. Current URL: {page.url}")
+            print("Amazon sign-in email form did not appear; inspect the debug screenshot.")
             page.screenshot(path="debug_signin.png")
             browser.close()
             raise
-        page.fill("#ap_email", email)
-        page.click("#continue")
 
         # Enter password
         page.wait_for_selector("#ap_password", timeout=15000)
@@ -78,12 +91,12 @@ def get_highlights() -> list[dict]:
         try:
             page.wait_for_selector("#kp-notebook-library", timeout=30000)
         except PlaywrightTimeoutError:
-            print(f"Could not load notebook library. Current URL: {page.url}")
+            print("Notebook did not load; authentication may require attention. Inspect the debug screenshot.")
             page.screenshot(path="debug_notebook.png")
             browser.close()
             return []
 
-        print(f"Notebook loaded. URL: {page.url}")
+        print("Notebook loaded.")
 
         # Collect all book elements
         book_elements = page.query_selector_all("#kp-notebook-library .kp-notebook-library-each-book")

@@ -8,6 +8,10 @@ Once a day, a GitHub Actions workflow picks a random highlight from a local DB, 
 
 The highlights themselves are refreshed weekly from Amazon (Playwright headless Chromium → `read.amazon.com/notebook`).
 
+## Shared highlights
+
+The local Mac collector can receive highlights from KOReader and a custom CrossPoint build, then merge them into this archive. See [Shared highlights setup](docs/shared-highlights.md). Existing Amazon imports and the daily quote workflow continue to use the same database.
+
 ## Architecture
 
 ```

@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: daily-kindle-quote
+  cancel-in-progress: false
+
 jobs:
   send-quote:
     runs-on: ubuntu-22.04
@@ -30,13 +34,29 @@ jobs:
         run: python main.py
 
       - name: Commit quote.png
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add quote.png
-          if git diff --cached --quiet; then
-            echo "No PNG change to commit."
-          else
+          # Retain the already-rendered image across retries. Discord delivery
+          # above occurs once, and publication never reruns quote selection.
+          cp quote.png "$RUNNER_TEMP/daily-quote.png"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "$TARGET_BRANCH"
+            git reset --hard FETCH_HEAD
+            cp "$RUNNER_TEMP/daily-quote.png" quote.png
+            git add quote.png
+            if git diff --cached --quiet; then
+              echo "No PNG change to commit."
+              exit 0
+            fi
             git commit -m "chore: daily quote PNG"
-            git push
-          fi
+            if git push origin "HEAD:refs/heads/$TARGET_BRANCH"; then
+              exit 0
+            fi
+            echo "Publish raced another writer or failed; retrying against latest archive ($attempt/5)."
+            sleep "$attempt"
+          done
+          echo "Could not publish the PNG after 5 attempts."
+          exit 1
