@@ -45,7 +45,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # The incoming batch lives outside the checkout. Each retry merges it
-          # into the newest archive, preserving concurrent device uploads.
+          # into the newest archive and reapplies its deletion tombstones.
+          # Only the archive is staged; the latest tombstone file is preserved.
           for attempt in 1 2 3 4 5; do
             git fetch origin "$TARGET_BRANCH"
             git reset --hard FETCH_HEAD

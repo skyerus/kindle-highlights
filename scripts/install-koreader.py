@@ -51,6 +51,9 @@ def main():
         shutil.copytree(plugin, backup / plugin.name)
     if config.exists():
         shutil.copyfile(config, backup / config.name)
+    queue = root / 'settings/sharedhighlights-queue.json'
+    if queue.exists():
+        shutil.copyfile(queue, backup / queue.name)
     staging = root / 'shared-highlights-install.tmp'
     if staging.exists():
         parser.error('A prior staging directory exists; inspect it before retrying.')
@@ -75,7 +78,8 @@ def main():
     assert json.loads(config.read_text()) == contents
     print('Installed and paired shared highlights; plugin files and configuration verified.')
     print('Previous plugin/configuration, if any, backed up at:', backup)
-    print('Safely eject the reader, restart KOReader, then Tools > Shared highlights > Sync highlights.')
+    print('Safely eject the reader and restart KOReader. Highlights sync automatically when Wi-Fi and the collector are available.')
+    print('For manual status: Tools > More tools > Shared highlights > Sync highlights.')
     print('The token was not printed.')
 
 

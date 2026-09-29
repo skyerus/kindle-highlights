@@ -1,7 +1,8 @@
 -- Load the real plugin with small mocks for its exact KOReader module boundary.
 local scheduled, captures, cancels={},0,0
+local last_delay
 local manager={
-    scheduleIn=function(_,_,f) scheduled[f]=true end,
+    scheduleIn=function(_,delay,f) scheduled[f]=true; last_delay=delay end,
     unschedule=function(_,f) scheduled[f]=nil end,
 }
 local modules={
@@ -30,4 +31,14 @@ p:onCloseWidget(); assert(not scheduled[p.tick])
 local new=instance(); new:onReaderReady(); assert(scheduled[new.tick] and not scheduled[p.tick])
 -- A queued stale tick cannot reach capture or initiate a request after closure.
 p:sync(false); assert(captures==4)
+local retries=instance()
+for _,delay in ipairs{30,60,120,240,300,300} do retries:retry(); assert(last_delay==delay and scheduled[retries.tick]) end
+retries:onSuspend(); assert(not scheduled[retries.tick])
+retries:retry(); assert(not scheduled[retries.tick])
+retries:onResume(); assert(scheduled[retries.tick] and last_delay==5)
+-- Wi-Fi being off stops retry polling without attempting to enable it.
+retries.config={url="http://192.168.0.221:8084",token="test"}
+modules["ui/network/manager"].isConnected=function() return false end
+scheduled[retries.tick]=nil
+retries:sync(false); assert(not scheduled[retries.tick])
 print("lifecycle tests passed: real suspend/resume/close handlers and stale sync guard")

@@ -15,7 +15,7 @@ import threading
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from db import merge
+from db import merge, quote_key, validate_tombstones
 
 MAX_BODY = 1024 * 1024
 LOG = logging.getLogger("collector")
@@ -40,11 +40,21 @@ def validate(payload):
     for item in records:
         if not isinstance(item, dict):
             raise ValueError("highlight must be an object")
-        record = {key: string(item.get(key, ""), key, size, key != "author")
-                  for key, size in (("id", 256), ("book_title", 4096), ("author", 4096), ("text", 65536))}
-        for key, size in (("note", 65536), ("created_at", 128), ("location", 4096)):
-            if key in item:
-                record[key] = string(item[key], key, size, False)
+        if "deleted" in item and not isinstance(item["deleted"], bool):
+            raise ValueError("deleted must be a boolean")
+        if item.get("deleted") is True:
+            record = {"id": string(item.get("id"), "id", 256), "deleted": True}
+            metadata = ("book_title", "author", "text")
+            if any(key in item for key in metadata):
+                if not all(key in item for key in metadata):
+                    raise ValueError("deletion metadata requires book_title, author and text")
+                record.update({key: string(item[key], key, size, key != "author") for key, size in (("book_title", 4096), ("author", 4096), ("text", 65536))})
+        else:
+            record = {key: string(item.get(key, ""), key, size, key != "author")
+                      for key, size in (("id", 256), ("book_title", 4096), ("author", 4096), ("text", 65536))}
+            for key, size in (("note", 65536), ("created_at", 128), ("location", 4096)):
+                if key in item:
+                    record[key] = string(item[key], key, size, False)
         if record["id"] in seen:
             raise ValueError("duplicate id within batch")
         seen.add(record["id"])
@@ -58,6 +68,14 @@ class Store:
         with self.connect() as con:
             con.execute("PRAGMA journal_mode=WAL")
             con.execute("CREATE TABLE IF NOT EXISTS inbox (source TEXT, device TEXT, id TEXT, payload TEXT NOT NULL, revision TEXT NOT NULL, published TEXT, PRIMARY KEY(source,device,id))")
+            con.execute("CREATE TABLE IF NOT EXISTS quote_history (source TEXT, device TEXT, id TEXT, quote_key TEXT, PRIMARY KEY(source,device,id,quote_key))")
+            con.execute("CREATE TABLE IF NOT EXISTS tombstones (quote_key TEXT PRIMARY KEY, published INTEGER NOT NULL DEFAULT 0)")
+            # Existing inboxes acquire key history without losing or requeuing quotes.
+            for source, device, ident, payload in con.execute("SELECT source,device,id,payload FROM inbox"):
+                item = json.loads(payload)
+                if not item.get("deleted"):
+                    con.execute("INSERT OR IGNORE INTO quote_history VALUES(?,?,?,?)", (source, device, ident, item_key(item)))
+
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -65,6 +83,7 @@ class Store:
         con = sqlite3.connect(self.path, timeout=30)
         try:
             con.execute("PRAGMA synchronous=FULL")
+            con.execute("PRAGMA secure_delete=ON")
             with con:
                 yield con
         finally:
@@ -73,10 +92,26 @@ class Store:
     def accept(self, payload):
         source, device, records = validate(payload)
         with self.connect() as con:
+            # Serialize acceptance against other clients so a delete always dominates
+            # an upsert, regardless of which request acquired the write lock first.
+            con.execute("BEGIN IMMEDIATE")
             for record in records:
+                identity = (source, device, record["id"])
+                previous = con.execute("SELECT payload FROM inbox WHERE source=? AND device=? AND id=?", identity).fetchone()
+                was_deleted = bool(previous and json.loads(previous[0]).get("deleted"))
+                key = item_key(record) if "text" in record else None
+                if key:
+                    con.execute("INSERT OR IGNORE INTO quote_history VALUES(?,?,?,?)", identity + (key,))
+                globally_deleted = key and con.execute("SELECT 1 FROM tombstones WHERE quote_key=?", (key,)).fetchone()
+                if record.get("deleted") or was_deleted or globally_deleted:
+                    keys = ([row[0] for row in con.execute("SELECT quote_key FROM quote_history WHERE source=? AND device=? AND id=?", identity)]
+                            if record.get("deleted") else ([key] if key else []))
+                    con.executemany("INSERT OR IGNORE INTO tombstones(quote_key) VALUES(?)", [(k,) for k in keys])
+                    record = {"id": record["id"], "deleted": True}
                 data = json.dumps(record, ensure_ascii=False, sort_keys=True)
                 revision = hashlib.sha256(data.encode()).hexdigest()
-                con.execute("INSERT INTO inbox(source,device,id,payload,revision) VALUES(?,?,?,?,?) ON CONFLICT(source,device,id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision", (source, device, record["id"], data, revision))
+                con.execute("INSERT INTO inbox(source,device,id,payload,revision) VALUES(?,?,?,?,?) ON CONFLICT(source,device,id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision", identity + (data, revision))
+            self._scrub_deleted(con)
         return [record["id"] for record in records]
 
     def pending(self):
@@ -88,10 +123,44 @@ class Store:
             con.executemany("UPDATE inbox SET published=? WHERE source=? AND device=? AND id=? AND revision=?", [(r[4], r[0], r[1], r[2], r[4]) for r in rows])
 
 
+    @staticmethod
+    def _scrub_deleted(con):
+        # Only erase a row when its current quote is deleted. A historical key
+        # must not erase a newer, different excerpt on another reader.
+        candidates = con.execute("SELECT DISTINCT i.source,i.device,i.id,i.payload FROM inbox i JOIN quote_history h ON i.source=h.source AND i.device=h.device AND i.id=h.id JOIN tombstones t ON h.quote_key=t.quote_key").fetchall()
+        deleted = {row[0] for row in con.execute("SELECT quote_key FROM tombstones")}
+        for source, device, ident, payload in candidates:
+            item = json.loads(payload)
+            if not item.get("deleted") and item_key(item) in deleted:
+                data = json.dumps({"id": ident, "deleted": True}, ensure_ascii=False, sort_keys=True)
+                revision = hashlib.sha256(data.encode()).hexdigest()
+                con.execute("UPDATE inbox SET payload=?,revision=? WHERE source=? AND device=? AND id=?", (data, revision, source, device, ident))
+
+    def tombstones(self, pending=False):
+        with self.connect() as con:
+            query = "SELECT quote_key FROM tombstones" + (" WHERE published=0" if pending else "")
+            return {row[0] for row in con.execute(query)}
+
+    def remember_tombstones(self, keys):
+        with self.connect() as con:
+            con.executemany("INSERT OR IGNORE INTO tombstones(quote_key,published) VALUES(?,1)", [(k,) for k in keys])
+            self._scrub_deleted(con)
+
+    def acknowledge_tombstones(self, keys):
+        with self.connect() as con:
+            con.executemany("UPDATE tombstones SET published=1 WHERE quote_key=?", [(k,) for k in keys])
+
+
+def item_key(item):
+    return quote_key({"book_title": item["book_title"], "author": item["author"], "highlight": item["text"]})
+
+
 def archive_rows(rows):
     quotes = []
     for source, device, ident, payload, revision in rows:
         item = json.loads(payload)
+        if item.get("deleted"):
+            continue
         quotes.append({"highlight": item["text"], "book_title": item["book_title"], "author": item["author"], "cover_url": ""})
     return quotes
 
@@ -114,39 +183,62 @@ class GitHub:
         from urllib.parse import quote
         if self.branch is None:
             self.branch = self.api("repos/" + self.repo)["default_branch"]
-        result = self.api("repos/%s/contents/highlights.json?ref=%s" % (self.repo, quote(self.branch, safe="")))
-        if result.get("encoding") == "none":
-            result_blob = self.api("repos/%s/git/blobs/%s" % (self.repo, result["sha"]))
-            content = result_blob["content"]
-        else:
-            content = result["content"]
-        quotes = json.loads(base64.b64decode(content))
+        head = self.api("repos/%s/git/ref/heads/%s" % (self.repo, quote(self.branch, safe="/")))["object"]["sha"]
+        commit = self.api("repos/%s/git/commits/%s" % (self.repo, head))
+        tree_sha = commit["tree"]["sha"]
+        tree = self.api("repos/%s/git/trees/%s" % (self.repo, tree_sha))
+        if tree.get("truncated"):
+            raise ValueError("remote tree truncated")
+        files = {entry["path"]: entry for entry in tree["tree"]}
+        def read_json(name, default=None):
+            if name not in files:
+                if default is not None:
+                    return default
+                raise ValueError("missing archive")
+            entry = files[name]
+            if entry["type"] != "blob" or entry["mode"] not in ("100644", "100755"):
+                raise ValueError("unexpected archive file type")
+            blob = self.api("repos/%s/git/blobs/%s" % (self.repo, entry["sha"]))
+            if blob.get("encoding") != "base64":
+                raise ValueError("unexpected blob encoding")
+            return json.loads(base64.b64decode(blob["content"]))
+        quotes = read_json("highlights.json")
         if not isinstance(quotes, list) or any(not isinstance(q, dict) or not all(isinstance(q.get(k), str) for k in ("highlight", "book_title", "author")) for q in quotes):
             raise ValueError("remote archive has unexpected schema")
-        return quotes, result["sha"]
+        tombstones = validate_tombstones(read_json("highlight-tombstones.json", []))
+        return quotes, tombstones, {"head": head, "tree": tree_sha}
 
-    def write(self, quotes, sha):
-        content = (json.dumps(quotes, ensure_ascii=False, indent=2) + "\n").encode()
-        self.api("repos/%s/contents/highlights.json" % self.repo, "PUT", {"message": "Sync reader highlights", "content": base64.b64encode(content).decode(), "sha": sha, "branch": self.branch})
+    def write(self, quotes, tombstones, snapshot):
+        from urllib.parse import quote
+        entries = [{"path": path, "mode": "100644", "type": "blob", "content": json.dumps(content, ensure_ascii=False, indent=2) + "\n"}
+                   for path, content in (("highlights.json", quotes), ("highlight-tombstones.json", sorted(tombstones)))]
+        tree = self.api("repos/%s/git/trees" % self.repo, "POST", {"base_tree": snapshot["tree"], "tree": entries})
+        commit = self.api("repos/%s/git/commits" % self.repo, "POST", {"message": "Sync reader highlights and deletions", "tree": tree["sha"], "parents": [snapshot["head"]]})
+        # A concurrent descendant of snapshot.head makes this sibling commit
+        # non-fast-forward; GitHub rejects it and publish_once rereads both files.
+        self.api("repos/%s/git/refs/heads/%s" % (self.repo, quote(self.branch, safe="/")), "PATCH", {"sha": commit["sha"], "force": False})
 
 
 def publish_once(store, github, attempts=3):
     rows = store.pending()
-    if not rows:
+    local_tombstones = store.tombstones()
+    if not rows and not store.tombstones(pending=True):
         return 0
     additions = archive_rows(rows)
     for attempt in range(attempts):
         try:
-            current, sha = github.read()
-            updated = merge(current, additions)
-            if current != updated:
-                github.write(updated, sha)
+            current, remote_tombstones, snapshot = github.read()
+            store.remember_tombstones(remote_tombstones)
+            deleted = remote_tombstones | local_tombstones
+            updated = merge(current, additions, deleted)
+            if current != updated or deleted != remote_tombstones:
+                github.write(updated, deleted, snapshot)
             store.acknowledge(rows)
+            store.acknowledge_tombstones(local_tombstones)
             return len(rows)
         except (RuntimeError, ValueError, KeyError, OSError, subprocess.TimeoutExpired):
             if attempt + 1 == attempts:
                 raise
-            # Reread the latest SHA and union on every retry, including conflicts.
     return 0
 
 
@@ -276,6 +368,7 @@ def main():
     if args.command == "status":
         status = json.loads(status_path.read_text()) if status_path.exists() else {"status": "not_attempted"}
         status["pending"] = len(store.pending())
+        status["pending_deletions"] = len(store.tombstones(pending=True))
         print(json.dumps(status))
         return
     github = GitHub(args.repo, args.branch, args.gh)
