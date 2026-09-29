@@ -233,6 +233,14 @@ class CollectorTests(unittest.TestCase):
         self.store.accept(deletion())
         self.store.accept(batch(device="other"))
         self.assertNotIn(quote_key(quote("Unrelated earlier version")), self.store.tombstones())
+        with self.store.connect() as con:
+            payload = json.loads(con.execute("SELECT payload FROM inbox WHERE device=?", ("other",)).fetchone()[0])
+        self.assertEqual(payload["text"], "Unrelated earlier version")
+        self.store.accept(batch("Unrelated earlier version", device="other"))
+        github = MemoryGitHub()
+        collector.publish_once(self.store, github)
+        self.assertEqual(github.current, [quote("Unrelated earlier version")])
+        self.assertNotIn(quote_key(quote("Unrelated earlier version")), self.store.tombstones())
 
     def test_remote_tombstone_scrubs_duplicate_payload(self):
         self.store.accept(batch())

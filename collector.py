@@ -103,6 +103,12 @@ class Store:
                 if key:
                     con.execute("INSERT OR IGNORE INTO quote_history VALUES(?,?,?,?)", identity + (key,))
                 globally_deleted = key and con.execute("SELECT 1 FROM tombstones WHERE quote_key=?", (key,)).fetchone()
+                if globally_deleted and not record.get("deleted") and previous and not was_deleted:
+                    previous_item = json.loads(previous[0])
+                    if item_key(previous_item) != key:
+                        # A stale replay of an old deleted version must not replace
+                        # a newer, different live excerpt on this annotation ID.
+                        continue
                 if record.get("deleted") or was_deleted or globally_deleted:
                     keys = ([row[0] for row in con.execute("SELECT quote_key FROM quote_history WHERE source=? AND device=? AND id=?", identity)]
                             if record.get("deleted") else ([key] if key else []))
