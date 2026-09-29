@@ -44,7 +44,28 @@ class RefreshTests(unittest.TestCase):
     def test_daily_png_publish_preserves_concurrent_quotes(self):
         self._workflow_race('daily.yml', 'Commit quote.png')
 
-    def _workflow_race(self, filename, step):
+    def test_amazon_reimport_cannot_restore_deleted_quote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / 'highlights.json'
+            deleted = {'highlight': 'deleted', 'book_title': 'Book', 'author': 'A'}
+            kept = dict(deleted, book_title='Other book')
+            archive.write_text(json.dumps([deleted, kept]))
+            incoming = Path(tmp) / 'incoming.json'
+            incoming.write_text(json.dumps([deleted, kept]))
+            with patch.object(db, 'DB_PATH', archive), patch.object(refresh, 'load_tombstones', return_value={db.quote_key(deleted)}):
+                self.assertEqual(refresh.main(['--merge-input', str(incoming)]), 0)
+            self.assertEqual(json.loads(archive.read_text()), [kept])
+
+    def test_refresh_retry_respects_concurrent_deletion(self):
+        self._workflow_race('refresh.yml', 'Merge and publish highlights against latest archive', deletion=True)
+
+    def test_daily_retry_preserves_concurrent_deletion(self):
+        self._workflow_race('daily.yml', 'Commit quote.png', deletion=True)
+
+    def test_daily_retry_skips_deleted_selected_quote(self):
+        self._workflow_race('daily.yml', 'Commit quote.png', deletion=True, deleted_selected=True)
+
+    def _workflow_race(self, filename, step, deletion=False, deleted_selected=False):
         # Run the actual publication shell from the workflow against a local bare
         # remote. A pre-push hook deterministically injects a competing writer.
         workflow = Path(__file__).parent / '.github/workflows' / filename
@@ -61,10 +82,10 @@ class RefreshTests(unittest.TestCase):
             git('clone', str(remote), str(runner))
             git('config', 'user.email', 'test@example.test', cwd=runner)
             git('config', 'user.name', 'Test', cwd=runner)
-            for name in ['refresh.py', 'scraper.py', 'db.py']:
+            for name in ['refresh.py', 'scraper.py', 'db.py', 'main.py']:
                 shutil.copy(Path(__file__).parent / name, runner / name)
             quote = lambda text: {'highlight': text, 'book_title': 'Book', 'author': 'A'}
-            (runner / 'highlights.json').write_text(json.dumps([quote('old')]))
+            (runner / 'highlights.json').write_text(json.dumps([quote('old')] + ([quote('deleted')] if deletion else [])))
             (runner / 'quote.png').write_text('previous PNG fixture')
             git('add', '.', cwd=runner)
             git('commit', '-m', 'seed', cwd=runner)
@@ -73,12 +94,16 @@ class RefreshTests(unittest.TestCase):
             git('config', 'user.email', 'test@example.test', cwd=rival)
             git('config', 'user.name', 'Test', cwd=rival)
             (rival / 'highlights.json').write_text(json.dumps([quote('old'), quote('device')]))
+            if deletion:
+                (rival / 'highlight-tombstones.json').write_text(json.dumps([db.quote_key(quote('deleted'))]))
+                git('add', 'highlight-tombstones.json', cwd=rival)
             git('add', 'highlights.json', cwd=rival)
             git('commit', '-m', 'concurrent device quote', cwd=rival)
             hook = runner / '.git/hooks/pre-push'
             hook.write_text(f'#!/bin/sh\nif [ ! -f "{root}/pushed" ]; then\n  touch "{root}/pushed"\n  git -C "{rival}" push origin main\nfi\n')
             hook.chmod(0o755)
-            (root / 'amazon-highlights.json').write_text(json.dumps([quote('amazon')]))
+            (root / 'amazon-highlights.json').write_text(json.dumps([quote('amazon')] + ([quote('deleted')] if deletion else [])))
+            (root / 'daily-quote-key').write_text(db.quote_key(quote('deleted' if deleted_selected else 'old')))
             (runner / 'quote.png').write_text('new PNG fixture')
             env = dict(os.environ, TARGET_BRANCH='main', RUNNER_TEMP=str(root))
             result = subprocess.run(['bash', '-e', '-c', script], cwd=runner, env=env, capture_output=True, text=True)
@@ -87,8 +112,14 @@ class RefreshTests(unittest.TestCase):
             expected = {'old', 'device', 'amazon'} if filename == 'refresh.yml' else {'old', 'device'}
             self.assertEqual({q['highlight'] for q in json.loads(archive)}, expected)
             if filename == 'daily.yml':
-                self.assertEqual(git('--git-dir', str(remote), 'show', 'main:quote.png').stdout, 'new PNG fixture')
-                self.assertNotIn('python main.py', script)
+                self.assertEqual(git('--git-dir', str(remote), 'show', 'main:quote.png').stdout, 'previous PNG fixture' if deleted_selected else 'new PNG fixture')
+                self.assertIn('python main.py --check-quote-key', script)
+                self.assertNotIn('--quote-key-output', script)
+            if deletion:
+                tombstones = git('--git-dir', str(remote), 'show', 'main:highlight-tombstones.json').stdout
+                self.assertEqual(json.loads(tombstones), [db.quote_key(quote('deleted'))])
+            if deleted_selected:
+                self.assertIn('Selected quote was deleted', result.stdout)
             self.assertIn('retrying against latest archive', result.stdout)
 
 

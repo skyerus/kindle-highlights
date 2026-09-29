@@ -22,9 +22,11 @@ connection. Wi-Fi must already be connected: the plugin never enables it or
 opens a network prompt. Network requests run in a subprocess, with an 8-second
 socket timeout and a 20-second parent deadline. On suspend or reader closing,
 the request is cancelled and its child is reaped asynchronously; queued records
-remain for the next active instance. Failed uploads remain queued and
-retry at the next event or manual sync. There is no background timer waking an
-idle device repeatedly.
+remain for the next active instance. Failed uploads remain queued and retry after 30, 60, 120, 240, then at most once
+every 300 seconds while awake and already connected to Wi-Fi. Retries stop when
+Wi-Fi is disconnected, the reader closes, or the device suspends. A later
+network/resume event or manual sync restarts delivery; the plugin never wakes a
+suspended device or activates Wi-Fi for retries.
 
 The first connected sync in each plugin instance and every manual sync reads
 all books still available in KOReader reading history, plus the currently open
@@ -39,13 +41,36 @@ revision sent, so edits made during upload stay queued. A stable annotation ID
 uses book title, author, creation time and selection position; renaming/moving a
 book file with unchanged metadata does not create a new identity. Changing the
 book metadata creates a new identity (the collector deduplicates quote content).
-Deleted highlights are not removed from the shared archive. Quotes exceeding
+Deleting a previously observed highlight from a loaded book queues an `{id,
+deleted: true}` tombstone. The collector applies its shared-archive deletion
+policy. Acknowledgements cannot discard a newer deletion or restoration while
+an older revision is in flight. Historical imports never infer deletions, and
+missing books or unavailable sidecars never cause deletion. Quotes exceeding
 the collector field limits are skipped and retained in the book's annotations.
 
 Uploads contain at most 16 highlights and less than 512 KiB of highlight JSON.
 Only IDs explicitly acknowledged by the collector are marked as stored. “Stored
 on the collector” means saved durably on the Mac, not yet published to GitHub.
 Your configured collector handles GitHub publication separately.
+
+## Upgrade and deletion tracking
+
+Queue migration preserves all old `sent` and `pending` revisions and adds a
+`books` map of known annotation IDs and original title/author/text, keyed by file path, title
+and author. Distinct files with identical metadata never authorize deletions
+from one another. Moving a book retains highlight upload IDs; its new path must
+be observed once to seed deletion tracking there. Tombstones include this original quote metadata when available so
+the collector can identify a quote even if its initial upload never completed. Existing book
+snapshots seed that map. Only a loaded book's actual annotation array can
+establish that a known highlight disappeared. A historical sidecar alone cannot.
+
+If a highlight was already deleted before this version first observed its book,
+the old sent-only state contains no book identity from which to reconstruct that
+deletion. That earlier deletion needs explicit collector/archive cleanup. Open
+books with existing highlights once after upgrading to seed tracking before
+removing them. Changes to book title/author create a separate logical identity;
+no unrelated old book is deleted by a metadata change. The collector's global
+quote tombstones intentionally suppress re-highlighting the same deleted excerpt.
 
 ## Verification
 
@@ -54,7 +79,10 @@ root. These host tests verify deduplication, edits racing acknowledgements,
 unknown acknowledgements, moved books, reverting an in-flight edit, and batch
 limits. Run `lua koreader/sharedhighlights.koplugin/tests/process_test.lua` to test
 asynchronous SIGKILL reaping, repeat cancellation, isolated instance transitions,
-and the trusted LAN URL validator. They do not exercise
+and the trusted LAN URL validator. Run `lua koreader/sharedhighlights.koplugin/tests/deletions_test.lua` for migration,
+authoritative deletion, unavailable-sidecar, stale-history and delete/upsert ACK
+races. The lifecycle test also covers bounded retry backoff and Wi-Fi-off pause.
+These tests do not exercise
 Kindle UI or its networking stack.
 
 Device acceptance: configure the collector, manually import an existing book,

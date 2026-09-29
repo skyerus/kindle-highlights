@@ -10,7 +10,7 @@ The highlights themselves are refreshed weekly from Amazon (Playwright headless 
 
 ## Shared highlights
 
-The local Mac collector can receive highlights from KOReader and a custom CrossPoint build, then merge them into this archive. See [Shared highlights setup](docs/shared-highlights.md). Existing Amazon imports and the daily quote workflow continue to use the same database.
+The local Mac collector can receive highlights from KOReader and a custom CrossPoint build, then merge them into this archive. See [Shared highlights setup](docs/shared-highlights.md). Existing Amazon imports and the daily quote workflow continue to use the same database. Synchronized reader deletions remove the matching quote from the current archive and persist a deletion marker, so later Amazon or device uploads cannot restore it. See the setup guide for exact matching and retention behavior.
 
 ## Architecture
 

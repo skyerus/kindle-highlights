@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 
-from db import load, merge, save
+from db import load, load_tombstones, merge, save
 from scraper import get_highlights
 
 
@@ -33,10 +33,9 @@ def main(argv=None) -> int:
         return 0
 
     existing = load()
-    merged = merge(existing, scraped)
-    added = len(merged) - len(existing)
+    merged = merge(existing, scraped, tombstones=load_tombstones())
     save(merged)
-    print(f"DB had {len(existing)} quotes, added {added}, total {len(merged)}.")
+    print(f"DB had {len(existing)} quotes; after merge and deletion filtering: {len(merged)}.")
     return 0
 
 

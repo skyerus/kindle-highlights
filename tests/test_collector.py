@@ -9,11 +9,30 @@ from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 
 import collector
-from db import merge
+from db import merge, quote_key, load_tombstones
 
 
 def batch(text="First highlight", ident="one", device="kindle"):
     return {"source": "koreader", "device_id": device, "highlights": [{"id": ident, "book_title": "A Book", "author": "An Author", "text": text}]}
+
+
+def quote(text="First highlight"):
+    return {"highlight": text, "book_title": "A Book", "author": "An Author", "cover_url": ""}
+
+
+def deletion():
+    return {"source": "koreader", "device_id": "kindle", "highlights": [{"id": "one", "deleted": True}]}
+
+
+class MemoryGitHub:
+    def __init__(self, quotes=()):
+        self.current = list(quotes)
+        self.deleted = set()
+    def read(self):
+        return copy.deepcopy(self.current), set(self.deleted), "snapshot"
+    def write(self, quotes, tombstones, snapshot):
+        self.current = quotes
+        self.deleted = set(tombstones)
 
 
 class CollectorTests(unittest.TestCase):
@@ -75,8 +94,8 @@ class CollectorTests(unittest.TestCase):
                 self.write_shas = []
             def read(self):
                 self.reads += 1
-                return copy.deepcopy(self.current), str(self.reads)
-            def write(self, quotes, sha):
+                return copy.deepcopy(self.current), set(), str(self.reads)
+            def write(self, quotes, tombstones, sha):
                 self.write_shas.append(sha)
                 if self.reads == 1:
                     self.current.append({"highlight": "Concurrent quote", "book_title": "Amazon", "author": "Author", "cover_url": ""})
@@ -100,8 +119,8 @@ class CollectorTests(unittest.TestCase):
                 self.writes = 0
             def read(self):
                 self.reads += 1
-                return copy.deepcopy(self.current), str(self.writes)
-            def write(self, quotes, sha):
+                return copy.deepcopy(self.current), set(), str(self.writes)
+            def write(self, quotes, tombstones, sha):
                 self.current = copy.deepcopy(quotes)
                 self.writes += 1
                 raise OSError("response lost after remote commit")
@@ -118,8 +137,8 @@ class CollectorTests(unittest.TestCase):
                 self.current = []
                 self.writes = 0
             def read(self):
-                return copy.deepcopy(self.current), str(self.writes)
-            def write(self, quotes, sha):
+                return copy.deepcopy(self.current), set(), str(self.writes)
+            def write(self, quotes, tombstones, sha):
                 self.current = copy.deepcopy(quotes)
                 self.writes += 1
         github = MemoryGitHub()
@@ -164,6 +183,155 @@ class CollectorTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             thread.join()
+
+    def test_delete_before_publish_and_stale_replay(self):
+        self.store.accept(batch())
+        self.store.accept(deletion())
+        self.store.accept(batch())
+        self.store = collector.Store(self.path / "inbox.sqlite3")
+        self.assertTrue(json.loads(self.store.pending()[0][3])["deleted"])
+        github = MemoryGitHub()
+        collector.publish_once(self.store, github)
+        self.assertEqual(github.current, [])
+        self.assertEqual(github.deleted, {quote_key(quote())})
+        self.assertNotIn("First highlight", self.store.pending().__repr__())
+        with self.store.connect() as con:
+            self.assertNotIn("First highlight", con.execute("SELECT payload FROM inbox").fetchone()[0])
+
+    def test_delete_after_publish_preserves_unrelated_and_all_annotation_versions(self):
+        other = quote("Unrelated")
+        same_text_other_book = dict(quote(), book_title="Other Book")
+        github = MemoryGitHub([other, same_text_other_book])
+        self.store.accept(batch())
+        collector.publish_once(self.store, github)
+        self.store.accept(batch("Edited"))
+        collector.publish_once(self.store, github)
+        self.assertEqual(len(github.current), 4)
+        self.store.accept(deletion())
+        collector.publish_once(self.store, github)
+        self.assertEqual(github.current, [other, same_text_other_book])
+        self.store.accept(batch(device="other-reader"))
+        collector.publish_once(self.store, github)
+        self.assertEqual(github.current, [other, same_text_other_book])
+        self.assertEqual(len(github.deleted), 2)
+
+    def test_global_delete_scrubs_duplicate_payload_but_preserves_newer_other_text(self):
+        self.store.accept(batch())
+        self.store.accept(batch(device="duplicate"))
+        self.store.accept(batch(device="edited-device"))
+        self.store.accept(batch("Different new excerpt", device="edited-device"))
+        self.store.accept(deletion())
+        with self.store.connect() as con:
+            payloads = {device: json.loads(payload) for device, payload in con.execute("SELECT device,payload FROM inbox")}
+        self.assertEqual(payloads["duplicate"], {"id": "one", "deleted": True})
+        self.assertEqual(payloads["edited-device"]["text"], "Different new excerpt")
+        self.assertNotIn(quote_key(quote("Different new excerpt")), self.store.tombstones())
+
+    def test_globally_deleted_upsert_does_not_delete_unrelated_history(self):
+        self.store.accept(batch("Unrelated earlier version", device="other"))
+        self.store.accept(batch())
+        self.store.accept(deletion())
+        self.store.accept(batch(device="other"))
+        self.assertNotIn(quote_key(quote("Unrelated earlier version")), self.store.tombstones())
+        with self.store.connect() as con:
+            payload = json.loads(con.execute("SELECT payload FROM inbox WHERE device=?", ("other",)).fetchone()[0])
+        self.assertEqual(payload["text"], "Unrelated earlier version")
+        self.store.accept(batch("Unrelated earlier version", device="other"))
+        github = MemoryGitHub()
+        collector.publish_once(self.store, github)
+        self.assertEqual(github.current, [quote("Unrelated earlier version")])
+        self.assertNotIn(quote_key(quote("Unrelated earlier version")), self.store.tombstones())
+
+    def test_remote_tombstone_scrubs_duplicate_payload(self):
+        self.store.accept(batch())
+        self.store.remember_tombstones({quote_key(quote())})
+        with self.store.connect() as con:
+            self.assertEqual(json.loads(con.execute("SELECT payload FROM inbox").fetchone()[0]), {"id": "one", "deleted": True})
+
+    def test_unknown_delete_then_stale_original_removes_existing_amazon_quote(self):
+        github = MemoryGitHub([quote()])
+        self.store.accept(deletion())
+        collector.publish_once(self.store, github)
+        self.assertEqual(github.current, [quote()])  # ID alone cannot identify an unseen quote.
+        self.store.accept(batch())
+        self.assertTrue(self.store.tombstones(pending=True))
+        collector.publish_once(self.store, github)
+        self.assertEqual(github.current, [])
+        self.store.accept(batch())
+        self.assertEqual(collector.publish_once(self.store, github), 0)
+
+    def test_unknown_delete_with_metadata_removes_existing_quote_immediately(self):
+        github = MemoryGitHub([quote()])
+        data = batch()
+        data["highlights"][0]["deleted"] = True
+        self.store.accept(data)
+        collector.publish_once(self.store, github)
+        self.assertEqual(github.current, [])
+        partial = deletion()
+        partial["highlights"][0]["text"] = "partial"
+        with self.assertRaises(ValueError):
+            self.store.accept(partial)
+
+    def test_remote_delete_wins_conflicting_stale_publish(self):
+        github = MemoryGitHub([quote("Other")])
+        original_write = github.write
+        def conflict(quotes, deleted, snapshot):
+            github.deleted.add(quote_key(quote()))
+            github.current.append(quote("Concurrent"))
+            github.write = original_write
+            raise RuntimeError("concurrent deletion")
+        github.write = conflict
+        self.store.accept(batch())
+        collector.publish_once(self.store, github)
+        self.assertEqual(github.current, [quote("Other"), quote("Concurrent")])
+        self.assertIn(quote_key(quote()), self.store.tombstones())
+
+    def test_delete_during_publish_remains_pending(self):
+        github = MemoryGitHub()
+        original_write = github.write
+        def concurrent_delete(quotes, deleted, snapshot):
+            self.store.accept(deletion())
+            original_write(quotes, deleted, snapshot)
+        github.write = concurrent_delete
+        self.store.accept(batch())
+        collector.publish_once(self.store, github)
+        self.assertEqual(len(self.store.pending()), 1)
+        github.write = original_write
+        collector.publish_once(self.store, github)
+        self.assertEqual(github.current, [])
+
+    def test_migration_backfills_legacy_inbox(self):
+        import sqlite3
+        legacy = self.path / "legacy.sqlite3"
+        with sqlite3.connect(legacy) as con:
+            con.execute("CREATE TABLE inbox (source TEXT,device TEXT,id TEXT,payload TEXT NOT NULL,revision TEXT NOT NULL,published TEXT,PRIMARY KEY(source,device,id))")
+            con.execute("INSERT INTO inbox VALUES(?,?,?,?,?,?)", ("koreader", "kindle", "one", json.dumps(batch()["highlights"][0]), "v1", "v1"))
+        store = collector.Store(legacy)
+        self.assertEqual(store.pending(), [])
+        store.accept(deletion())
+        self.assertEqual(store.tombstones(), {quote_key(quote())})
+
+    def test_merge_tombstones_and_corruption(self):
+        deleted = quote_key(quote())
+        self.assertEqual(merge([quote(), quote("Other")], [quote()], {deleted}), [quote("Other")])
+        self.assertEqual(quote_key(quote(" First   highlight ")), deleted)
+        path = self.path / "highlight-tombstones.json"
+        self.assertEqual(load_tombstones(path), set())
+        path.write_text(json.dumps([deleted]))
+        self.assertEqual(load_tombstones(path), {deleted})
+        path.write_text('["bad"]')
+        with self.assertRaises(ValueError):
+            load_tombstones(path)
+
+    def test_github_commit_atomically_updates_both_files_without_force(self):
+        client = collector.GitHub("owner/repo", "main")
+        with patch.object(client, "api", side_effect=[{"sha": "newtree"}, {"sha": "newcommit"}, {}]) as api:
+            client.write([quote()], {quote_key(quote("Deleted"))}, {"head": "oldhead", "tree": "oldtree"})
+        entries = api.call_args_list[0].args[2]
+        self.assertEqual(entries["base_tree"], "oldtree")
+        self.assertEqual({e["path"] for e in entries["tree"]}, {"highlights.json", "highlight-tombstones.json"})
+        self.assertEqual(api.call_args_list[1].args[2]["parents"], ["oldhead"])
+        self.assertEqual(api.call_args_list[2].args[2], {"sha": "newcommit", "force": False})
 
     def test_concurrent_status_writes_are_atomic(self):
         with ThreadPoolExecutor(max_workers=8) as pool:

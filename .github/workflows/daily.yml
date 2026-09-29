@@ -31,7 +31,7 @@ jobs:
       - name: Pick quote, render PNG, send to Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python main.py
+        run: python main.py --quote-key-output "$RUNNER_TEMP/daily-quote-key"
 
       - name: Commit quote.png
         env:
@@ -41,11 +41,22 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # Retain the already-rendered image across retries. Discord delivery
           # above occurs once, and publication never reruns quote selection.
+          # Only quote.png is staged; concurrent archive deletions and tombstones
+          # remain exactly as fetched from the latest remote commit.
           cp quote.png "$RUNNER_TEMP/daily-quote.png"
           for attempt in 1 2 3 4 5; do
             git fetch origin "$TARGET_BRANCH"
             git reset --hard FETCH_HEAD
-            cp "$RUNNER_TEMP/daily-quote.png" quote.png
+            if python main.py --check-quote-key "$RUNNER_TEMP/daily-quote-key"; then
+              cp "$RUNNER_TEMP/daily-quote.png" quote.png
+            else
+              status=$?
+              if [ "$status" -eq 3 ]; then
+                echo "Selected quote was deleted; skipping PNG publication."
+                exit 0
+              fi
+              exit "$status"
+            fi
             git add quote.png
             if git diff --cached --quiet; then
               echo "No PNG change to commit."

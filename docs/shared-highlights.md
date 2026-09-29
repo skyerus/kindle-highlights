@@ -7,10 +7,10 @@ This keeps Amazon, KOReader, and CrossPoint excerpts in the existing `highlights
 1. A reader saves a highlight on its own storage.
 2. The reader sends it to the Mac collector when the home network and Mac are available.
 3. The collector commits the incoming record to local SQLite before acknowledging it.
-4. A background publisher merges pending quotes into the latest GitHub `highlights.json`. Failed publication remains pending and is retried.
+4. A background publisher merges pending quotes and deletions into the latest GitHub archive. It publishes `highlights.json` and `highlight-tombstones.json` in one commit. Failed publication remains pending and is retried.
 5. The existing daily quote workflow continues to select from that archive.
 
-The Amazon refresh remains another producer. The collector uses optimistic GitHub file updates, and refresh fetches and merges against the latest remote state, so concurrent updates must not overwrite each other.
+The Amazon refresh remains another producer. The collector uses a commit based on the latest GitHub branch head and a non-forced branch update. Refresh fetches and merges against the latest archive and deletion markers on every retry, so concurrent updates preserve both additions and deletions.
 
 `highlights.json` is in a public repository. Anything published there is publicly readable. The separate collector token, device identities, and local file paths must stay on the Mac/readers, outside the repository.
 
@@ -48,6 +48,8 @@ Back up the entire `Reading Highlights/data` directory while the service is stop
 
 ## Reader setup
 
+For an upgrade, update and restart the Mac collector before installing a deletion-enabled reader plugin. Older collectors do not understand deletion records and must not acknowledge new-client deletion traffic. Preserve the collector data directory and the reader's pending queue during upgrades.
+
 See [`koreader/sharedhighlights.koplugin/README.md`](../koreader/sharedhighlights.koplugin/README.md) for installation, settings, offline retries and manual synchronization on KOReader.
 
 CrossPoint requires the custom X4 Pro firmware with clipping capture and **Sync Highlights** support; stock releases without this feature cannot create excerpts. Keep a known-good firmware image and preserve the SD card contents before installation. The collector uses the same protocol for both readers.
@@ -76,4 +78,32 @@ CrossPoint requires the custom X4 Pro firmware with clipping capture and **Sync 
 
 The response's `accepted` list identifies durably saved records. A client must retain unacknowledged records and may safely retry. Clients should send small batches; the server limits requests to 1 MiB and 128 records. CrossPoint sends one clipping per request to bound memory use.
 
-The archive is additive. Removing a highlight from a reader does not remove a previously collected quote from GitHub.
+A deletion uses the same endpoint, source, device ID and stable highlight ID:
+
+```json
+{
+  "source": "koreader",
+  "device_id": "reader-unique-id",
+  "highlights": [{
+    "id": "stable-highlight-id",
+    "deleted": true,
+    "book_title": "Book title",
+    "author": "Author",
+    "text": "The selected excerpt."
+  }]
+}
+```
+
+Provide all three quote fields together when available, so a deletion can remove a matching Amazon-imported quote even before this reader uploaded it. An ID-only deletion is also supported.
+
+The collector acknowledges deletions after saving them locally. It remembers the quote identities previously associated with that reader record, removes those exact quotes from the current archive, and persists deletion markers so an old upload or Amazon refresh cannot restore them. A deletion received before an upload also suppresses that later upload for the same reader record. Clients retry deletions until acknowledged, just like additions.
+
+## Deletion behavior
+
+Deletion identity combines book title, author and excerpt text, normalizing Unicode, case and whitespace. Deleting a collected quote suppresses the same quote from all producers. The same words in a different book or with a different author remain separate. This does not remove annotations from another reader; it removes them from the shared archive and future daily selections.
+
+`highlight-tombstones.json` stores SHA256 quote identities, without excerpt text or reader IDs. Keep it with `highlights.json` when backing up or restoring the archive. A malformed deletion file stops publication rather than silently restoring removed quotes. Do not remove these markers to troubleshoot connectivity. There is no automatic undo: re-highlighting a suppressed quote does not restore it.
+
+The daily workflow filters deleted quotes before choosing one. If a quote is deleted while its PNG publication is retrying, the workflow skips publishing that image and leaves the previous image in place. Already-sent Discord messages, an already-published PNG and historical Git commits are not retroactively removed.
+
+Only deletions captured and synchronized by a supporting reader client reach the collector. Removing a line directly from the GitHub archive without its deletion marker does not prevent a future import from adding it again.

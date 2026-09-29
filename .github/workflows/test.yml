@@ -25,9 +25,10 @@ jobs:
       - name: Collector durability and authentication
         run: python -m unittest discover -s tests -v
       - name: Workflow concurrency and Amazon sign-in fixtures
-        run: python -m unittest test_scraper_refresh test_scraper_signin -v
+        run: python -m unittest test_scraper_refresh test_scraper_daily test_scraper_signin -v
       - name: KOReader queue and process lifecycle
         run: |
           lua5.1 koreader/sharedhighlights.koplugin/tests/queue_test.lua
+          lua5.1 koreader/sharedhighlights.koplugin/tests/deletions_test.lua
           lua5.1 koreader/sharedhighlights.koplugin/tests/process_test.lua
           lua5.1 koreader/sharedhighlights.koplugin/tests/lifecycle_test.lua
