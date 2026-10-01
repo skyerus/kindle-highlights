@@ -1080,13 +1080,15 @@
     "highlight": "39 The best of all rulers is but a shadowy presence to his subjects. Next comes the ruler they love and praise; Next comes one they fear; Next comes one with whom they take liberties.",
     "book_title": "Tao Te Ching (Classics)",
     "author": "Lao Tzu and Darrell D. Lau",
-    "cover_url": "https://m.media-amazon.com/images/I/91o4LY9vW-L._SY160.jpg"
+    "cover_url": "https://m.media-amazon.com/images/I/91o4LY9vW-L._SY160.jpg",
+    "created_at": "2025-01-24T00:34:38"
   },
   {
     "highlight": "103 Limpid and still, One can be a leader in the empire.",
     "book_title": "Tao Te Ching (Classics)",
     "author": "Lao Tzu and Darrell D. Lau",
-    "cover_url": "https://m.media-amazon.com/images/I/91o4LY9vW-L._SY160.jpg"
+    "cover_url": "https://m.media-amazon.com/images/I/91o4LY9vW-L._SY160.jpg",
+    "created_at": "2025-01-25T00:57:47"
   },
   {
     "highlight": "The more skills the people have The further novelties multiply;",
@@ -1099,13 +1101,15 @@
     "highlight": "149 Lay plans for the accomplishment of the difficult before it becomes difficult; make something big by starting with it when small.",
     "book_title": "Tao Te Ching (Classics)",
     "author": "Lao Tzu and Darrell D. Lau",
-    "cover_url": "https://m.media-amazon.com/images/I/91o4LY9vW-L._SY160.jpg"
+    "cover_url": "https://m.media-amazon.com/images/I/91o4LY9vW-L._SY160.jpg",
+    "created_at": "2025-01-25T10:46:05"
   },
   {
     "highlight": "149a Difficult things in the world must needs have their beginnings in the easy; big things must needs have their beginnings in the small.",
     "book_title": "Tao Te Ching (Classics)",
     "author": "Lao Tzu and Darrell D. Lau",
-    "cover_url": "https://m.media-amazon.com/images/I/91o4LY9vW-L._SY160.jpg"
+    "cover_url": "https://m.media-amazon.com/images/I/91o4LY9vW-L._SY160.jpg",
+    "created_at": "2025-01-25T10:46:18"
   },
   {
     "highlight": "The antifragile loves randomness and uncertainty, which also means—crucially—a love of errors, a certain class of errors. Antifragility has a singular property of allowing us to deal with the unknown, to do things without understanding them—and do them well. Let me be more aggressive: we are largely better at doing than we are at thinking, thanks to antifragility. I’d rather be dumb and antifragile than extremely smart and fragile, any time.",
@@ -1902,5 +1906,12 @@
     "book_title": "Nexus",
     "author": "Harari, Yuval Noah",
     "cover_url": ""
+  },
+  {
+    "highlight": "The US legal system already recognises corporations as legal persons that possess rights such as freedom of speech.",
+    "book_title": "Nexus",
+    "author": "Harari, Yuval Noah",
+    "cover_url": "",
+    "created_at": "2026-10-01T14:43:03Z"
   }
 ]
