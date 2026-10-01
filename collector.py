@@ -15,7 +15,7 @@ import threading
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from db import merge, quote_key, validate_tombstones
+from db import merge, preserve_creation_date, quote_key, validate_tombstones
 
 MAX_BODY = 1024 * 1024
 LOG = logging.getLogger("collector")
@@ -114,6 +114,9 @@ class Store:
                             if record.get("deleted") else ([key] if key else []))
                     con.executemany("INSERT OR IGNORE INTO tombstones(quote_key) VALUES(?)", [(k,) for k in keys])
                     record = {"id": record["id"], "deleted": True}
+                elif previous and not was_deleted:
+                    # Older clients may replay an undated copy after enrichment.
+                    preserve_creation_date(record, json.loads(previous[0]))
                 data = json.dumps(record, ensure_ascii=False, sort_keys=True)
                 revision = hashlib.sha256(data.encode()).hexdigest()
                 con.execute("INSERT INTO inbox(source,device,id,payload,revision) VALUES(?,?,?,?,?) ON CONFLICT(source,device,id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision", identity + (data, revision))
@@ -167,7 +170,9 @@ def archive_rows(rows):
         item = json.loads(payload)
         if item.get("deleted"):
             continue
-        quotes.append({"highlight": item["text"], "book_title": item["book_title"], "author": item["author"], "cover_url": ""})
+        quote = {"highlight": item["text"], "book_title": item["book_title"], "author": item["author"], "cover_url": ""}
+        preserve_creation_date(quote, item)
+        quotes.append(quote)
     return quotes
 
 
@@ -268,7 +273,7 @@ def server(store, token, host, port):
             self.wfile.write(body)
 
         def do_GET(self):
-            self.reply(200 if self.path == "/healthz" else 404, {"status": "ok"} if self.path == "/healthz" else {"error": "not found"})
+            self.reply(200 if self.path == "/healthz" else 404, {"status": "ok", "service": "reader-bridge"} if self.path == "/healthz" else {"error": "not found"})
 
         def do_POST(self):
             if self.path != "/v1/highlights":
@@ -353,10 +358,10 @@ def publisher_loop(store, github, directory, stop, interval):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("init", "serve", "publish", "status"))
-    parser.add_argument("--state-dir", default="~/Library/Application Support/Reading Highlights/data")
+    parser.add_argument("--state-dir", default="~/Library/Application Support/Reader Bridge/collector/data")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8084)
-    parser.add_argument("--repo", default="skyerus/kindle-highlights")
+    parser.add_argument("--repo", help="Your explicitly selected personal GitHub archive OWNER/REPO")
     parser.add_argument("--branch")
     parser.add_argument("--gh", default="gh", help="absolute gh executable path for launchd")
     parser.add_argument("--publish-interval", type=int, default=60)
@@ -365,6 +370,8 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.publish_interval < 10:
         parser.error("publish interval must be at least 10 seconds")
+    if args.command in ("serve", "publish") and not args.repo and not args.no_publish:
+        parser.error("--repo OWNER/REPO is required; Reader Bridge never chooses someone else's archive")
     directory, token = initialize(args.state_dir)
     store = Store(directory / "inbox.sqlite3")
     if args.command == "init":
