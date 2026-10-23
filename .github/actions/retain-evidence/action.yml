@@ -1,0 +1,33 @@
+name: Retain workflow evidence
+description: Preserve local-runner evidence on the MacBook, with GitHub artifacts for hosted jobs.
+inputs:
+  name:
+    required: true
+    description: Artifact name
+  path:
+    required: true
+    description: Files or glob patterns, one per line
+  if-no-files-found:
+    default: warn
+    description: error, warn or ignore
+  retention-days:
+    default: '14'
+    description: Requested retention, in days
+runs:
+  using: composite
+  steps:
+    - if: runner.environment == 'self-hosted'
+      shell: bash
+      env:
+        EVIDENCE_NAME: ${{ inputs.name }}
+        EVIDENCE_PATHS: ${{ inputs.path }}
+        EVIDENCE_MISSING: ${{ inputs.if-no-files-found }}
+        EVIDENCE_RETENTION: ${{ inputs.retention-days }}
+      run: python3 "${{ github.action_path }}/retain.py"
+    - if: runner.environment == 'github-hosted'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}

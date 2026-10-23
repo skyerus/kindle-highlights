@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-22.04
+    runs-on: ${{ fromJSON(((github.actor != 'skyerus' && github.actor != 'github-actions[bot]') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-22.04"]' || '["self-hosted","Linux","X64","macbook-linux"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,7 +21,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lua5.1
           python -m pip install playwright==1.44.0 pyotp==2.9.0
-          playwright install chromium --with-deps
+          # The Mac runner image already includes Chromium system libraries.
+          # Playwright 1.44's dependency installer only supports Ubuntu 22.04.
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            playwright install chromium
+          else
+            playwright install chromium --with-deps
+          fi
       - name: Collector durability and authentication
         run: python -m unittest discover -s tests -v
       - name: Workflow concurrency and Amazon sign-in fixtures
