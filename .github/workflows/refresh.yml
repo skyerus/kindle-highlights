@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   refresh:
-    runs-on: ${{ fromJSON(((github.actor != 'skyerus' && github.actor != 'github-actions[bot]') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-24.04"]' || '["self-hosted","Linux","X64","macbook-linux"]') }}
+    runs-on: ${{ fromJSON(((github.actor != 'skyerus' && github.actor != 'github-actions[bot]') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-22.04"]' || '["self-hosted","Linux","X64","macbook-linux"]') }}
 
     steps:
       - name: Checkout
@@ -29,7 +29,13 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install Playwright browsers
-        run: playwright install chromium --with-deps
+        run: |
+          # System libraries are preinstalled in the Mac runner image.
+          if [ "${{ runner.environment }}" = "self-hosted" ]; then
+            playwright install chromium
+          else
+            playwright install chromium --with-deps
+          fi
 
       - name: Scrape Amazon
         env:
